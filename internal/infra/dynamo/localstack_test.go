@@ -241,3 +241,41 @@ func (p *publicadorMemoria) Publicar(_ context.Context, _ string, env mensageria
 	p.tipos = append(p.tipos, env.Tipo)
 	return nil
 }
+
+func TestLocalStack_SalvarVariasDeComando(t *testing.T) {
+	r := tabelaDeTeste(t)
+	ctx := context.Background()
+	osID := uuid.New()
+	a, b := novaTarefa(t, tarefa.Diagnostico, osID, time.Now()), novaTarefa(t, tarefa.Reparo, osID, time.Now())
+	for _, tf := range []tarefa.Tarefa{a, b} {
+		if err := r.CriarDeComando(ctx, tf, cmdPara(tf), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ca, cb := a, b
+	ca.Cancelar(time.Now())
+	cb.Cancelar(time.Now())
+	cmd := execucao.Comando{MessageID: uuid.New(), Tipo: execucao.TipoCancelarTarefas, SagaID: a.SagaID, OsID: osID}
+	resp := []execucao.Saida{{Tipo: execucao.TipoTarefasCanceladas, SagaID: a.SagaID, OsID: osID, Payload: map[string]int{"quantidade": 2}}}
+
+	if err := r.SalvarVariasDeComando(ctx, []tarefa.Tarefa{ca, cb}, []tarefa.Estado{tarefa.Aguardando, tarefa.Aguardando}, cmd, resp); err != nil {
+		t.Fatal(err)
+	}
+	ts, _ := r.ListarPorOS(ctx, osID)
+	for _, tf := range ts {
+		if tf.Estado != tarefa.Cancelada {
+			t.Errorf("tarefa %s ficou %s", tf.Tipo, tf.Estado)
+		}
+	}
+	if err := r.SalvarVariasDeComando(ctx, nil, nil, cmd, resp); !errors.Is(err, execucao.ErrJaProcessada) {
+		t.Errorf("reentrega: %v", err)
+	}
+	// Estado anterior desatualizado: nada é gravado (tudo ou nada).
+	outro := execucao.Comando{MessageID: uuid.New(), Tipo: execucao.TipoCancelarTarefas, SagaID: a.SagaID, OsID: osID}
+	if err := r.SalvarVariasDeComando(ctx, []tarefa.Tarefa{ca}, []tarefa.Estado{tarefa.Aguardando}, outro, resp); !errors.Is(err, execucao.ErrConflito) {
+		t.Errorf("estado mudou no meio: %v", err)
+	}
+	if err := r.SalvarVariasDeComando(ctx, []tarefa.Tarefa{ca}, nil, outro, resp); err == nil {
+		t.Error("tamanhos diferentes devem falhar")
+	}
+}

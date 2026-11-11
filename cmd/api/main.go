@@ -88,7 +88,7 @@ func main() {
 	}
 	tracer := mensageria.TracerNewRelic{App: nrApp}
 	repo := dynamo.Novo(dynamodb.NewFromConfig(awsCfg), cfg.Tabela, tracer)
-	svc := execucao.Novo(repo)
+	svc := execucao.Novo(repo, execucao.ComFalhaSimulada(os.Getenv("PERMITIR_FALHA_SIMULADA") == "true"))
 	clienteSQS := sqs.NewFromConfig(awsCfg)
 
 	consumidor := mensageria.NovoConsumer(clienteSQS, mensageria.ConfigConsumer{

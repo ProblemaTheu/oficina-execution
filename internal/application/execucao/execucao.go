@@ -23,6 +23,12 @@ const (
 	TipoDiagnosticoIniciado  = "DiagnosticoIniciado"
 	TipoDiagnosticoConcluido = "DiagnosticoConcluido"
 	TipoDiagnosticoFalhou    = "DiagnosticoFalhou"
+	TipoExecutarReparo       = "ExecutarReparo"
+	TipoExecucaoIniciada     = "ExecucaoIniciada"
+	TipoExecucaoFalhou       = "ExecucaoFalhou"
+	TipoExecucaoConcluida    = "ExecucaoConcluida"
+	TipoCancelarTarefas      = "CancelarTarefas"
+	TipoTarefasCanceladas    = "TarefasCanceladas"
 )
 
 // Erros do repositório traduzidos pela API e pelo consumidor.
@@ -61,6 +67,11 @@ type Repositorio interface {
 	// Salvar regrava a tarefa se o estado ainda for estadoAnterior, com as
 	// saídas. ErrConflito se outra operação mudou a tarefa no meio.
 	Salvar(ctx context.Context, t tarefa.Tarefa, estadoAnterior tarefa.Estado, saidas []Saida) error
+	// SalvarVariasDeComando regrava várias tarefas (cada uma condicionada ao
+	// seu estado anterior), marca o comando na inbox e grava as saídas — tudo
+	// ou nada. ErrJaProcessada se o comando já foi processado; ErrConflito se
+	// alguma tarefa mudou no meio.
+	SalvarVariasDeComando(ctx context.Context, ts []tarefa.Tarefa, anteriores []tarefa.Estado, cmd Comando, saidas []Saida) error
 	Buscar(ctx context.Context, id uuid.UUID) (tarefa.Tarefa, error)
 	ListarFila(ctx context.Context, tipo tarefa.Tipo) ([]tarefa.Tarefa, error)
 	ListarPorOS(ctx context.Context, osID uuid.UUID) ([]tarefa.Tarefa, error)
@@ -68,12 +79,26 @@ type Repositorio interface {
 
 // Servico reúne os casos de uso.
 type Servico struct {
-	repo  Repositorio
-	agora func() time.Time
+	repo          Repositorio
+	agora         func() time.Time
+	falhaSimulada bool
 }
 
+// Opcao configura o serviço.
+type Opcao func(*Servico)
+
+// ComFalhaSimulada liga a falha de demonstração por placa FAL* (F4-4.7).
+// Desligada por padrão; só a ligue no ambiente de gravação do vídeo.
+func ComFalhaSimulada(ligada bool) Opcao { return func(s *Servico) { s.falhaSimulada = ligada } }
+
 // Novo cria o serviço.
-func Novo(repo Repositorio) *Servico { return &Servico{repo: repo, agora: time.Now} }
+func Novo(repo Repositorio, opts ...Opcao) *Servico {
+	s := &Servico{repo: repo, agora: time.Now}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
 
 // PayloadIniciarDiagnostico é o comando enviado pelo orquestrador.
 type PayloadIniciarDiagnostico struct {
@@ -120,10 +145,15 @@ func (s *Servico) Iniciar(ctx context.Context, id uuid.UUID, mecanico string) (t
 		return tarefa.Tarefa{}, err
 	}
 	var saidas []Saida
-	if t.Tipo == tarefa.Diagnostico {
+	switch t.Tipo {
+	case tarefa.Diagnostico:
 		// Informativo: o orquestrador muda a OS para em_diagnostico.
 		saidas = append(saidas, Saida{Tipo: TipoDiagnosticoIniciado, SagaID: t.SagaID, OsID: t.OsID,
 			Payload: map[string]string{"tarefa_id": t.ID.String(), "mecanico": mecanico}})
+	case tarefa.Reparo:
+		// Pivô da saga: o OS baixa a reserva de estoque; daqui não se compensa.
+		saidas = append(saidas, Saida{Tipo: TipoExecucaoIniciada, SagaID: t.SagaID, OsID: t.OsID,
+			Payload: map[string]string{"tarefa_id": t.ID.String(), "iniciado_em": t.IniciadoEm.Format(time.RFC3339)}})
 	}
 	if err := s.repo.Salvar(ctx, t, anterior, saidas); err != nil {
 		return tarefa.Tarefa{}, err
@@ -180,4 +210,90 @@ func (s *Servico) ListarFila(ctx context.Context, tipo tarefa.Tipo) ([]tarefa.Ta
 // ListarPorOS devolve as tarefas de uma OS.
 func (s *Servico) ListarPorOS(ctx context.Context, osID uuid.UUID) ([]tarefa.Tarefa, error) {
 	return s.repo.ListarPorOS(ctx, osID)
+}
+
+// ── Reparo e cancelamento ─────────────────────────────────────────────────────
+
+// PayloadExecutarReparo é o comando enviado após o pagamento confirmado.
+type PayloadExecutarReparo struct {
+	NumeroOS string `json:"numero_os"`
+	Veiculo  struct {
+		Placa  string `json:"placa"`
+		Modelo string `json:"modelo"`
+	} `json:"veiculo"`
+	Diagnostico string `json:"diagnostico"`
+}
+
+// ExecutarReparo põe o reparo na fila (com prioridade sobre diagnóstico).
+//
+// Falha simulada (F4-4.7): com a opção ligada e placa FAL*, responde
+// ExecucaoFalhou — a saga, que já tem o pagamento, estorna. É a cena do vídeo.
+func (s *Servico) ExecutarReparo(ctx context.Context, cmd Comando, p PayloadExecutarReparo) error {
+	falha := func(motivo string) error {
+		return s.repo.Responder(ctx, cmd, []Saida{{Tipo: TipoExecucaoFalhou, SagaID: cmd.SagaID, OsID: cmd.OsID,
+			Payload: map[string]string{"motivo": motivo}}})
+	}
+	if strings.TrimSpace(p.Veiculo.Placa) == "" {
+		logging.Log(ctx).Warn("ExecutarReparo sem placa; respondendo falha", "os_id", cmd.OsID)
+		return falha("comando_invalido: veiculo.placa ausente")
+	}
+	if s.falhaSimulada && tarefa.PlacaDeFalhaSimulada(p.Veiculo.Placa) {
+		logging.Log(ctx).Warn("falha simulada no reparo (placa FAL*)", "os_id", cmd.OsID, "placa", p.Veiculo.Placa)
+		return falha("falha_simulada")
+	}
+	t, err := tarefa.Nova(tarefa.Reparo, cmd.OsID, cmd.SagaID, p.NumeroOS, p.Veiculo.Placa, p.Veiculo.Modelo, p.Diagnostico, s.agora())
+	if err != nil {
+		return fmt.Errorf("nova tarefa: %w", err)
+	}
+	if err := s.repo.CriarDeComando(ctx, t, cmd, nil); err != nil {
+		return err
+	}
+	logging.Log(ctx).Info("tarefa de reparo na fila", "tarefa_id", t.ID, "os_id", t.OsID)
+	return nil
+}
+
+// ConcluirReparo encerra o reparo e responde ExecucaoConcluida (OS finalizada).
+func (s *Servico) ConcluirReparo(ctx context.Context, id uuid.UUID) (tarefa.Tarefa, error) {
+	t, err := s.repo.Buscar(ctx, id)
+	if err != nil {
+		return tarefa.Tarefa{}, err
+	}
+	anterior := t.Estado
+	if err := t.ConcluirReparo(s.agora()); err != nil {
+		return tarefa.Tarefa{}, err
+	}
+	saidas := []Saida{{Tipo: TipoExecucaoConcluida, SagaID: t.SagaID, OsID: t.OsID,
+		Payload: map[string]string{"tarefa_id": t.ID.String(), "finalizado_em": t.FinalizadoEm.Format(time.RFC3339)}}}
+	if err := s.repo.Salvar(ctx, t, anterior, saidas); err != nil {
+		return tarefa.Tarefa{}, err
+	}
+	logging.Log(ctx).Info("reparo concluído", "tarefa_id", t.ID, "os_id", t.OsID)
+	return t, nil
+}
+
+// CancelarTarefas (compensação): cancela as tarefas não concluídas da OS e
+// responde TarefasCanceladas{quantidade} — zero é resposta válida, e é com ela
+// que o orquestrador sabe que pode seguir a compensação.
+func (s *Servico) CancelarTarefas(ctx context.Context, cmd Comando) error {
+	ts, err := s.repo.ListarPorOS(ctx, cmd.OsID)
+	if err != nil {
+		return err
+	}
+	var (
+		canceladas []tarefa.Tarefa
+		anteriores []tarefa.Estado
+	)
+	for _, t := range ts {
+		anterior := t.Estado
+		if t.Cancelar(s.agora()) {
+			canceladas, anteriores = append(canceladas, t), append(anteriores, anterior)
+		}
+	}
+	resposta := []Saida{{Tipo: TipoTarefasCanceladas, SagaID: cmd.SagaID, OsID: cmd.OsID,
+		Payload: map[string]int{"quantidade": len(canceladas)}}}
+	if err := s.repo.SalvarVariasDeComando(ctx, canceladas, anteriores, cmd, resposta); err != nil {
+		return err
+	}
+	logging.Log(ctx).Info("tarefas canceladas pela compensação", "os_id", cmd.OsID, "quantidade", len(canceladas))
+	return nil
 }

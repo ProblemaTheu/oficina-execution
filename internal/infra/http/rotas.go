@@ -21,6 +21,7 @@ type casosDeUso interface {
 	ListarPorOS(ctx context.Context, osID uuid.UUID) ([]tarefa.Tarefa, error)
 	Iniciar(ctx context.Context, id uuid.UUID, mecanico string) (tarefa.Tarefa, error)
 	ConcluirDiagnostico(ctx context.Context, id uuid.UUID, mecanico, diagnostico string) (tarefa.Tarefa, error)
+	ConcluirReparo(ctx context.Context, id uuid.UUID) (tarefa.Tarefa, error)
 }
 
 // Prontidao verifica as dependências para o /health/ready.
@@ -51,6 +52,7 @@ func Rotas(uc casosDeUso, segredo []byte, pronto Prontidao) http.Handler {
 		r.Get("/tarefas", h.tarefasDaOS)
 		r.Post("/tarefas/{id}/iniciar", h.iniciar)
 		r.Post("/tarefas/{id}/concluir-diagnostico", h.concluirDiagnostico)
+		r.Post("/tarefas/{id}/concluir", h.concluirReparo)
 	})
 	return r
 }
@@ -159,6 +161,19 @@ func (h handlers) concluirDiagnostico(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := h.uc.ConcluirDiagnostico(r.Context(), id, claim(r.Context(), "sub"), corpo.Diagnostico)
+	if err != nil {
+		responderErro(w, r, err)
+		return
+	}
+	escreverJSON(w, http.StatusOK, paraJSON(t))
+}
+
+func (h handlers) concluirReparo(w http.ResponseWriter, r *http.Request) {
+	id, ok := idDaTarefa(w, r)
+	if !ok {
+		return
+	}
+	t, err := h.uc.ConcluirReparo(r.Context(), id)
 	if err != nil {
 		responderErro(w, r, err)
 		return

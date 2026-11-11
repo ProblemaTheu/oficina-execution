@@ -68,6 +68,26 @@ func (r *repoMemoria) Salvar(_ context.Context, t tarefa.Tarefa, anterior tarefa
 	return nil
 }
 
+func (r *repoMemoria) SalvarVariasDeComando(_ context.Context, ts []tarefa.Tarefa, anteriores []tarefa.Estado, cmd Comando, s []Saida) error {
+	if r.errEscrita != nil {
+		return r.errEscrita
+	}
+	if r.inbox[cmd.MessageID] {
+		return ErrJaProcessada
+	}
+	for i, t := range ts {
+		if r.tarefas[t.ID].Estado != anteriores[i] {
+			return ErrConflito
+		}
+	}
+	r.inbox[cmd.MessageID] = true
+	for _, t := range ts {
+		r.tarefas[t.ID] = t
+	}
+	r.saidas = append(r.saidas, s...)
+	return nil
+}
+
 func (r *repoMemoria) Buscar(_ context.Context, id uuid.UUID) (tarefa.Tarefa, error) {
 	if r.errLeitura != nil {
 		return tarefa.Tarefa{}, r.errLeitura
@@ -93,6 +113,9 @@ func (r *repoMemoria) ListarFila(_ context.Context, tipo tarefa.Tipo) ([]tarefa.
 }
 
 func (r *repoMemoria) ListarPorOS(_ context.Context, osID uuid.UUID) ([]tarefa.Tarefa, error) {
+	if r.errLeitura != nil {
+		return nil, r.errLeitura
+	}
 	var out []tarefa.Tarefa
 	for _, t := range r.tarefas {
 		if t.OsID == osID {
@@ -305,5 +328,135 @@ func TestListarPorOS(t *testing.T) {
 	ts, err := s.ListarPorOS(context.Background(), cmd.OsID)
 	if err != nil || len(ts) != 1 || ts[0].OsID != cmd.OsID {
 		t.Errorf("ListarPorOS = %v, %v", ts, err)
+	}
+}
+
+// ── Reparo e cancelamento ─────────────────────────────────────────────────────
+
+func payloadReparo(placa string) PayloadExecutarReparo {
+	var p PayloadExecutarReparo
+	p.NumeroOS, p.Veiculo.Placa, p.Veiculo.Modelo, p.Diagnostico = "OS-1", placa, "Gol", "amortecedor vazando"
+	return p
+}
+
+func TestExecutarReparo_CriaTarefaDeReparo(t *testing.T) {
+	r := novoRepo()
+	cmd := comando()
+	cmd.Tipo = TipoExecutarReparo
+	if err := servico(r).ExecutarReparo(context.Background(), cmd, payloadReparo("ABC1D23")); err != nil {
+		t.Fatal(err)
+	}
+	tf := unica(t, r)
+	if tf.Tipo != tarefa.Reparo || tf.Estado != tarefa.Aguardando || tf.Descricao != "amortecedor vazando" || len(r.saidas) != 0 {
+		t.Errorf("reparo = %+v, saídas %v", tf, r.saidas)
+	}
+}
+
+func TestExecutarReparo_FalhaSimulada(t *testing.T) {
+	ligada := Novo(novoRepo(), ComFalhaSimulada(true))
+	ligada.agora = func() time.Time { return relogio }
+	r := ligada.repo.(*repoMemoria)
+	if err := ligada.ExecutarReparo(context.Background(), comando(), payloadReparo("FAL1A23")); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.tarefas) != 0 || len(r.saidas) != 1 || r.saidas[0].Tipo != TipoExecucaoFalhou ||
+		r.saidas[0].Payload.(map[string]string)["motivo"] != "falha_simulada" {
+		t.Fatalf("FAL* com a opção ligada deve responder ExecucaoFalhou: %+v", r.saidas)
+	}
+
+	// Desligada (padrão): placa FAL* é um carro como outro qualquer.
+	d := novoRepo()
+	if err := servico(d).ExecutarReparo(context.Background(), comando(), payloadReparo("FAL1A23")); err != nil || len(d.tarefas) != 1 {
+		t.Errorf("sem a opção, FAL* segue o fluxo normal: %v %d", err, len(d.tarefas))
+	}
+}
+
+func TestExecutarReparo_SemPlacaEErros(t *testing.T) {
+	r := novoRepo()
+	if err := servico(r).ExecutarReparo(context.Background(), comando(), payloadReparo(" ")); err != nil || r.saidas[0].Tipo != TipoExecucaoFalhou {
+		t.Errorf("sem placa: %v %v", err, r.saidas)
+	}
+	e := novoRepo()
+	e.errEscrita = errors.New("dynamodb fora")
+	if err := servico(e).ExecutarReparo(context.Background(), comando(), payloadReparo("ABC1D23")); err == nil {
+		t.Error("erro de infra deve voltar para a fila")
+	}
+}
+
+func TestReparo_IniciarEConcluirRespondemASaga(t *testing.T) {
+	r := novoRepo()
+	s := servico(r)
+	cmd := comando()
+	_ = s.ExecutarReparo(context.Background(), cmd, payloadReparo("ABC1D23"))
+	id := unica(t, r).ID
+
+	if _, err := s.ConcluirReparo(context.Background(), id); !errors.Is(err, tarefa.ErrTransicaoInvalida) {
+		t.Errorf("concluir sem iniciar (pivô): %v", err)
+	}
+	if _, err := s.Iniciar(context.Background(), id, "mec-1"); err != nil {
+		t.Fatal(err)
+	}
+	tf, err := s.ConcluirReparo(context.Background(), id)
+	if err != nil || tf.Estado != tarefa.Concluida {
+		t.Fatalf("concluir: %v %+v", err, tf)
+	}
+	if len(r.saidas) != 2 || r.saidas[0].Tipo != TipoExecucaoIniciada || r.saidas[1].Tipo != TipoExecucaoConcluida ||
+		r.saidas[1].OsID != cmd.OsID || r.saidas[0].Payload.(map[string]string)["iniciado_em"] == "" {
+		t.Errorf("saídas = %+v", r.saidas)
+	}
+	if _, err := s.ConcluirReparo(context.Background(), uuid.New()); !errors.Is(err, ErrNaoEncontrada) {
+		t.Errorf("inexistente: %v", err)
+	}
+	r.errEscrita = ErrConflito
+	r.tarefas[id] = func() tarefa.Tarefa { x := r.tarefas[id]; x.Estado = tarefa.EmAndamento; return x }()
+	if _, err := s.ConcluirReparo(context.Background(), id); !errors.Is(err, ErrConflito) {
+		t.Errorf("conflito: %v", err)
+	}
+}
+
+func TestCancelarTarefas(t *testing.T) {
+	r := novoRepo()
+	s := servico(r)
+	cmd := comando()
+	_ = s.IniciarDiagnostico(context.Background(), cmd, payload("ABC1D23")) // aguardando
+	rep := cmd
+	rep.MessageID = uuid.New()
+	_ = s.ExecutarReparo(context.Background(), rep, payloadReparo("ABC1D23")) // aguardando
+	var diag uuid.UUID
+	for id, tf := range r.tarefas {
+		if tf.Tipo == tarefa.Diagnostico {
+			diag = id
+		}
+	}
+	_, _ = s.ConcluirDiagnostico(context.Background(), diag, "mec", "x") // concluída: fica como está
+	r.saidas = nil
+
+	cancelar := Comando{MessageID: uuid.New(), Tipo: TipoCancelarTarefas, SagaID: cmd.SagaID, OsID: cmd.OsID}
+	if err := s.CancelarTarefas(context.Background(), cancelar); err != nil {
+		t.Fatal(err)
+	}
+	if r.saidas[0].Tipo != TipoTarefasCanceladas || r.saidas[0].Payload.(map[string]int)["quantidade"] != 1 {
+		t.Fatalf("resposta = %+v", r.saidas)
+	}
+	if r.tarefas[diag].Estado != tarefa.Concluida {
+		t.Error("tarefa concluída não pode ser cancelada")
+	}
+	if err := s.CancelarTarefas(context.Background(), cancelar); !errors.Is(err, ErrJaProcessada) {
+		t.Errorf("reentrega: %v", err)
+	}
+}
+
+func TestCancelarTarefas_SemTarefasRespondeZero(t *testing.T) {
+	r := novoRepo()
+	if err := servico(r).CancelarTarefas(context.Background(), comando()); err != nil {
+		t.Fatal(err)
+	}
+	if r.saidas[0].Payload.(map[string]int)["quantidade"] != 0 {
+		t.Error("zero é resposta válida (o orquestrador segue a compensação)")
+	}
+	e := novoRepo()
+	e.errLeitura = errors.New("fora")
+	if err := servico(e).CancelarTarefas(context.Background(), comando()); err == nil {
+		t.Error("erro de leitura deve voltar para a fila")
 	}
 }
