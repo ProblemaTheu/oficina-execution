@@ -1,0 +1,148 @@
+# CI do Execution Service — roda em todo PR para a main e em todo push na main.
+# Os nomes dos jobs (name:) são os checks exigidos pelo ruleset da main:
+# mude aqui e no ruleset juntos.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    name: Build e testes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      # Testes unitários com -race + gate de 80% no critério do Sonar
+      - name: Testes e cobertura ≥ 80%
+        id: cobertura
+        run: ./scripts/cobertura.sh
+
+      - name: Resumo
+        if: always()
+        run: |
+          echo "### Execution Service — testes" >> "$GITHUB_STEP_SUMMARY"
+          echo "Cobertura unitária (excluindo cmd/ e o adaptador DynamoDB, testado por integração): **${{ steps.cobertura.outputs.cobertura }}%** (mínimo 80%)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar cobertura
+        uses: actions/upload-artifact@v7
+        with:
+          name: cobertura
+          path: coverage.unit.out
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: latest
+          args: --build-tags localstack
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # o gitleaks olha os commits, não só a árvore
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: '8.30.1'
+
+  integracao:
+    name: Integração (LocalStack)
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:4
+        env:
+          SERVICES: dynamodb,sqs
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -fs http://localhost:4566/_localstack/health"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Adaptador DynamoDB (idempotência, escrita condicional, fila, outbox) e
+      # mensageria contra SQS FIFO real (deduplicação, ordem, DLQ)
+      - name: Testes contra LocalStack
+        run: go test -tags localstack -count=1 -v ./internal/infra/dynamo/ ./internal/infra/mensageria/
+
+  sonar:
+    name: SonarCloud
+    runs-on: ubuntu-latest
+    # Só roda com o projeto configurado (variables do repo). Sem elas o job é
+    # pulado em vez de falhar — ver README, seção "Qualidade".
+    if: vars.SONAR_PROJECT_KEY != ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # o Sonar usa o histórico para "código novo"
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Testes com cobertura
+        run: ./scripts/cobertura.sh
+
+      # coverage.out completo: o Sonar aplica sonar.coverage.exclusions sozinho.
+      # qualitygate.wait faz ESTE job falhar quando o quality gate reprova.
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.qualitygate.wait=true

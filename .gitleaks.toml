@@ -1,0 +1,12 @@
+# Configuração do gitleaks — usada localmente e no CI.
+#
+# Mantém TODAS as regras padrão e suprime apenas falsos positivos verificados.
+# Nunca use allowlist para calar um segredo real: segredo commitado precisa ser
+# rotacionado, não silenciado.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Segredo fictício dos testes da API — o próprio valor diz o que é"
+regexes = ['''segredo-de-teste-com-mais-de-32-caracteres''']

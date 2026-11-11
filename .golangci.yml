@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  # Conjunto padrão: errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        # Não exigir doc comment em todo símbolo exportado
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+
+formatters:
+  enable:
+    - gofmt

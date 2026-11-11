@@ -1,0 +1,30 @@
+# Controle de versão e CI
+.git
+.github
+
+# Documentação e material de entrega (não entram na imagem)
+docs
+pdfs
+README.md
+*.md
+
+# Ambiente local
+.env
+.env.*
+docker-compose.yml
+.vscode
+.idea
+.claude
+
+# Artefatos de build/teste
+bin
+coverage.out
+coverage
+*.test
+
+# Configurações de ferramentas que não afetam o build
+.golangci.yml
+sonar-project.properties
+oapi-codegen.yaml
+.dockerignore
+Dockerfile
