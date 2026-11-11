@@ -135,7 +135,10 @@ jobs:
         run: ./scripts/cobertura.sh
 
       # coverage.out completo: o Sonar aplica sonar.coverage.exclusions sozinho.
-      # qualitygate.wait faz ESTE job falhar quando o quality gate reprova.
+      # qualitygate.wait faz ESTE job falhar quando o quality gate reprova — só
+      # em PR, que é onde ele bloqueia o merge (check obrigatório). Na main a
+      # análise alimenta o painel: num projeto novo o gate da branch ainda não
+      # é calculado ("código novo" sem referência) e o wait falharia o push.
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
@@ -145,4 +148,4 @@ jobs:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=${{ github.event_name == 'pull_request' }}
