@@ -1,0 +1,213 @@
+openapi: 3.0.3
+info:
+  title: Execution Service — Oficina (Fase 4)
+  version: 1.0.0
+  description: |
+    Fila de diagnóstico e reparo e API do mecânico. Participante da saga
+    orquestrada pelo OS Service: as tarefas são **criadas pela saga**
+    (comandos `IniciarDiagnostico` e `ExecutarReparo`); aqui o mecânico as
+    consulta, inicia e conclui — cada ação responde à saga pela outbox.
+
+    Autenticação: o mesmo JWT do OS Service (HS256, `aud=oficina-api`).
+    Leitura: qualquer funcionário. Ações: papéis `mecanico` ou `administrador`.
+    Tokens de cliente recebem `403`.
+servers:
+  - url: http://localhost:8082
+    description: Local (docker-compose.saga.yml)
+  - url: https://{apiId}.execute-api.us-east-1.amazonaws.com
+    description: Produção (API Gateway)
+    variables:
+      apiId:
+        default: xxxxxxxxxx
+security:
+  - bearerAuth: []
+tags:
+  - name: Fila
+  - name: Tarefas
+  - name: Saúde
+paths:
+  /execution/v1/fila:
+    get:
+      tags: [Fila]
+      summary: Tarefas aguardando, em ordem de atendimento
+      description: Reparos antes de diagnósticos (carro já pago esperando é o pior caso); dentro do tipo, por chegada.
+      operationId: listarFila
+      parameters:
+        - name: tipo
+          in: query
+          required: false
+          schema: { type: string, enum: [DIAGNOSTICO, REPARO] }
+      responses:
+        '200':
+          description: Fila
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tarefa' }
+        '401': { $ref: '#/components/responses/NaoAutorizado' }
+        '403': { $ref: '#/components/responses/Proibido' }
+        '422': { $ref: '#/components/responses/RegraDeNegocio' }
+  /execution/v1/tarefas:
+    get:
+      tags: [Tarefas]
+      summary: Tarefas de uma OS
+      operationId: tarefasDaOS
+      parameters:
+        - name: os_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Tarefas da OS (inclusive concluídas e canceladas)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Tarefa' }
+        '400': { $ref: '#/components/responses/Validacao' }
+        '401': { $ref: '#/components/responses/NaoAutorizado' }
+        '403': { $ref: '#/components/responses/Proibido' }
+  /execution/v1/tarefas/{id}/iniciar:
+    parameters:
+      - $ref: '#/components/parameters/IdTarefa'
+    post:
+      tags: [Tarefas]
+      summary: Inicia a tarefa
+      description: |
+        `AGUARDANDO` → `EM_ANDAMENTO`. Responde à saga `DiagnosticoIniciado`
+        (diagnóstico) ou **`ExecucaoIniciada`** (reparo — **pivô** T6: o OS
+        baixa o estoque). Dois mecânicos na mesma tarefa: o segundo recebe `409`.
+      operationId: iniciarTarefa
+      responses:
+        '200':
+          description: Tarefa iniciada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tarefa' }
+        '400': { $ref: '#/components/responses/Validacao' }
+        '401': { $ref: '#/components/responses/NaoAutorizado' }
+        '403': { $ref: '#/components/responses/Proibido' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+        '409': { $ref: '#/components/responses/Conflito' }
+        '422': { $ref: '#/components/responses/RegraDeNegocio' }
+  /execution/v1/tarefas/{id}/concluir-diagnostico:
+    parameters:
+      - $ref: '#/components/parameters/IdTarefa'
+    post:
+      tags: [Tarefas]
+      summary: Conclui o diagnóstico
+      description: Diagnóstico → `CONCLUIDA`. Responde `DiagnosticoConcluido` (a saga pede o orçamento ao Billing).
+      operationId: concluirDiagnostico
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [diagnostico]
+              properties:
+                diagnostico: { type: string, example: amortecedor dianteiro vazando }
+      responses:
+        '200':
+          description: Diagnóstico concluído
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tarefa' }
+        '400': { $ref: '#/components/responses/Validacao' }
+        '401': { $ref: '#/components/responses/NaoAutorizado' }
+        '403': { $ref: '#/components/responses/Proibido' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+        '409': { $ref: '#/components/responses/Conflito' }
+        '422': { $ref: '#/components/responses/RegraDeNegocio' }
+  /execution/v1/tarefas/{id}/concluir:
+    parameters:
+      - $ref: '#/components/parameters/IdTarefa'
+    post:
+      tags: [Tarefas]
+      summary: Conclui o reparo
+      description: Reparo `EM_ANDAMENTO` → `CONCLUIDA`. Responde `ExecucaoConcluida` (OS finalizada). Exige o reparo iniciado.
+      operationId: concluirReparo
+      responses:
+        '200':
+          description: Reparo concluído
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tarefa' }
+        '400': { $ref: '#/components/responses/Validacao' }
+        '401': { $ref: '#/components/responses/NaoAutorizado' }
+        '403': { $ref: '#/components/responses/Proibido' }
+        '404': { $ref: '#/components/responses/NaoEncontrado' }
+        '409': { $ref: '#/components/responses/Conflito' }
+        '422': { $ref: '#/components/responses/RegraDeNegocio' }
+  /health/live:
+    get:
+      tags: [Saúde]
+      summary: Liveness
+      security: []
+      responses:
+        '200': { description: Processo vivo }
+  /health/ready:
+    get:
+      tags: [Saúde]
+      summary: Readiness (lê a tabela do DynamoDB)
+      security: []
+      responses:
+        '200': { description: Pronto }
+        '503': { description: DynamoDB indisponível }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdTarefa:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    Tarefa:
+      type: object
+      required: [id, os_id, tipo, estado, criado_em]
+      properties:
+        id: { type: string, format: uuid }
+        os_id: { type: string, format: uuid }
+        numero_os: { type: string, example: OS-2026-00042 }
+        tipo: { type: string, enum: [DIAGNOSTICO, REPARO] }
+        estado: { type: string, enum: [AGUARDANDO, EM_ANDAMENTO, CONCLUIDA, CANCELADA] }
+        placa: { type: string, example: ABC1D23 }
+        modelo: { type: string, example: Gol }
+        descricao: { type: string, description: queixa (diagnóstico) ou diagnóstico a executar (reparo) }
+        mecanico: { type: string, description: sub do JWT de quem iniciou }
+        diagnostico: { type: string }
+        criado_em: { type: string, format: date-time }
+        iniciado_em: { type: string, format: date-time }
+        finalizado_em: { type: string, format: date-time }
+    Erro:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+  responses:
+    Validacao:
+      description: Parâmetro ou corpo inválido (`VALIDATION_ERROR`)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Erro' } } }
+    NaoAutorizado:
+      description: Token ausente ou inválido
+      content: { application/json: { schema: { $ref: '#/components/schemas/Erro' } } }
+    Proibido:
+      description: Cliente ou papel sem permissão (`ACCESS_DENIED`)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Erro' } } }
+    NaoEncontrado:
+      description: Tarefa não encontrada (`NOT_FOUND`)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Erro' } } }
+    Conflito:
+      description: Transição inválida ou concorrente (`CONFLITO`), ou tarefa cancelada pela saga (`TAREFA_CANCELADA`)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Erro' } } }
+    RegraDeNegocio:
+      description: Regra violada — diagnóstico vazio, tipo errado, tipo de fila inválido (`REGRA_DE_NEGOCIO`)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Erro' } } }

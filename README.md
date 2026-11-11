@@ -1,5 +1,9 @@
 # oficina-execution — Execution Service
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ProblemaTheu_oficina-execution&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ProblemaTheu_oficina-execution)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=ProblemaTheu_oficina-execution&metric=coverage)](https://sonarcloud.io/component_measures?id=ProblemaTheu_oficina-execution&metric=coverage)
+[![CI](https://github.com/ProblemaTheu/oficina-execution/actions/workflows/ci.yml/badge.svg)](https://github.com/ProblemaTheu/oficina-execution/actions/workflows/ci.yml)
+
 Fila de **diagnóstico e reparo** da oficina. Um dos três microsserviços da Fase 4 do Tech Challenge (SOAT), ao lado do [OS Service](https://github.com/ProblemaTheu/oficina-app) e do [Billing Service](https://github.com/ProblemaTheu/oficina-billing).
 
 ## O que faz — e o que não faz
@@ -95,6 +99,16 @@ AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=te
 | `gitleaks` | segredos no histórico |
 | `Integração (LocalStack)` | idempotência, escrita condicional, fila, outbox/relay, SQS FIFO e DLQ |
 | `SonarCloud` | quality gate (`sonar.qualitygate.wait=true` — o job falha se o gate reprovar) |
+
+## Documentação
+
+| Documento | Conteúdo |
+|---|---|
+| [docs/arquitetura.md](docs/arquitetura.md) | Componentes, mensagens consumidas/produzidas, modelo de dados |
+| [docs/openapi.yaml](docs/openapi.yaml) | Contrato da API (OpenAPI 3) |
+| [Arquitetura da Fase 4](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/planejamentos/fase-4/arquitetura.md) | Os 3 serviços, a saga e o catálogo de mensagens |
+| [RFC-006 — Saga](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/rfcs/RFC-006-saga-e-consistencia-distribuida.md) · [ADRs 009–016](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/architecture-decisions.md) | Decisões |
+| [Coleção Postman da Fase 4](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/postman/fase-4-saga.json) | Fluxo completo da saga |
 
 ## Ambientes
 
