@@ -274,6 +274,51 @@ func (r *Repositorio) Salvar(ctx context.Context, t tarefa.Tarefa, anterior tare
 	return r.transacao(ctx, append([]types.TransactWriteItem{tf}, out...), execucao.ErrConflito)
 }
 
+// SalvarVariasDeComando: inbox + cada tarefa condicionada ao seu estado
+// anterior + saídas, num TransactWriteItems só. A inbox é o 1º item: se a
+// condição dele falhar, é reentrega (ErrJaProcessada); qualquer outra condição
+// falha é uma tarefa que mudou no meio (ErrConflito, a mensagem volta à fila).
+func (r *Repositorio) SalvarVariasDeComando(ctx context.Context, ts []tarefa.Tarefa, anteriores []tarefa.Estado, cmd execucao.Comando, saidas []execucao.Saida) error {
+	if len(ts) != len(anteriores) {
+		return fmt.Errorf("SalvarVariasDeComando: %d tarefas e %d estados", len(ts), len(anteriores))
+	}
+	inbox, err := r.itemInbox(cmd)
+	if err != nil {
+		return err
+	}
+	itens := []types.TransactWriteItem{inbox}
+	for i, t := range ts {
+		it, err := r.put(paraItem(t), "estado = :anterior", map[string]types.AttributeValue{
+			":anterior": &types.AttributeValueMemberS{Value: string(anteriores[i])},
+		})
+		if err != nil {
+			return err
+		}
+		itens = append(itens, it)
+	}
+	out, err := r.itensOutbox(ctx, saidas)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: append(itens, out...)})
+	var cancelada *types.TransactionCanceledException
+	if errors.As(err, &cancelada) {
+		for i, motivo := range cancelada.CancellationReasons {
+			if aws.ToString(motivo.Code) != "ConditionalCheckFailed" {
+				continue
+			}
+			if i == 0 {
+				return execucao.ErrJaProcessada
+			}
+			return execucao.ErrConflito
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("dynamodb TransactWriteItems: %w", err)
+	}
+	return nil
+}
+
 // ── leitura ───────────────────────────────────────────────────────────────────
 
 // Buscar devolve uma tarefa pelo id (leitura fortemente consistente).

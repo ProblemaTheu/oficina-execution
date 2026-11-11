@@ -6,11 +6,12 @@ Fila de **diagnóstico e reparo** da oficina. Um dos três microsserviços da Fa
 
 | Faz | Não faz |
 |---|---|
-| Recebe da saga o comando `IniciarDiagnostico` e põe a tarefa na **fila de execução** | Não conhece preço, orçamento nem pagamento |
-| Expõe a **API do mecânico**: ver a fila, iniciar, concluir o diagnóstico | Não muda o status da OS — **responde** ao orquestrador do OS Service |
-| Responde à saga (`DiagnosticoIniciado`, `DiagnosticoConcluido`, `DiagnosticoFalhou`) pela **outbox** | Não lê o banco de nenhum outro serviço |
+| Recebe da saga `IniciarDiagnostico` e `ExecutarReparo` e põe as tarefas na **fila de execução** | Não conhece preço, orçamento nem pagamento |
+| Expõe a **API do mecânico**: ver a fila, iniciar, concluir diagnóstico e reparo | Não muda o status da OS — **responde** ao orquestrador do OS Service |
+| Responde à saga pela **outbox** (`DiagnosticoIniciado/Concluido/Falhou`, `ExecucaoIniciada/Concluida/Falhou`, `TarefasCanceladas`) | Não lê o banco de nenhum outro serviço |
+| **Compensação** `CancelarTarefas`: cancela as tarefas não concluídas da OS | Não compensa depois do pivô: iniciado o reparo, o estoque já saiu |
 
-*Próximo incremento:* `ExecutarReparo`, `CancelarTarefas` (compensação) e a falha simulada por placa `FAL*`.
+**Falha simulada (F4-4.7):** com `PERMITIR_FALHA_SIMULADA=true` (só no ambiente de gravação; padrão `false`), `ExecutarReparo` para um veículo de placa `FAL*` responde `ExecucaoFalhou{motivo: falha_simulada}` — a saga, que já tem o pagamento, estorna. É o gatilho da cena de falha do vídeo.
 
 ## Tecnologias
 
@@ -55,8 +56,9 @@ Base `/execution/v1`, JWT do OS Service (`aud=oficina-api`, mesmo segredo `JWT_S
 |---|---|---|---|
 | GET | `/fila?tipo=DIAGNOSTICO\|REPARO` | funcionário | Tarefas aguardando, em ordem de atendimento |
 | GET | `/tarefas?os_id=` | funcionário | Tarefas de uma OS |
-| POST | `/tarefas/{id}/iniciar` | mecânico, administrador | `EM_ANDAMENTO` → `DiagnosticoIniciado` |
+| POST | `/tarefas/{id}/iniciar` | mecânico, administrador | `EM_ANDAMENTO` → `DiagnosticoIniciado` (diagnóstico) · **`ExecucaoIniciada`** (reparo — pivô: o OS baixa o estoque) |
 | POST | `/tarefas/{id}/concluir-diagnostico` `{"diagnostico": "..."}` | mecânico, administrador | `CONCLUIDA` → `DiagnosticoConcluido` |
+| POST | `/tarefas/{id}/concluir` | mecânico, administrador | Reparo `CONCLUIDA` → `ExecucaoConcluida` (OS finalizada). Exige o reparo iniciado |
 | GET | `/health/live`, `/health/ready` | — | Probes (ready lê a tabela) |
 
 Erros: `404` tarefa inexistente · `409 CONFLITO` / `TAREFA_CANCELADA` · `422 REGRA_DE_NEGOCIO` · `403` cliente ou papel sem permissão.

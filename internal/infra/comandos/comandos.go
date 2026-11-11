@@ -14,6 +14,8 @@ import (
 // casosDeUso é o que os handlers usam do execucao.Servico.
 type casosDeUso interface {
 	IniciarDiagnostico(ctx context.Context, cmd execucao.Comando, p execucao.PayloadIniciarDiagnostico) error
+	ExecutarReparo(ctx context.Context, cmd execucao.Comando, p execucao.PayloadExecutarReparo) error
+	CancelarTarefas(ctx context.Context, cmd execucao.Comando) error
 }
 
 // Handlers devolve os handlers por tipo de mensagem.
@@ -29,6 +31,18 @@ func Handlers(uc casosDeUso) map[string]mensageria.Handler {
 				p = execucao.PayloadIniciarDiagnostico{}
 			}
 			return ignorarDuplicata(uc.IniciarDiagnostico(ctx, comando(env), p))
+		},
+		execucao.TipoExecutarReparo: func(ctx context.Context, env mensageria.Envelope) error {
+			var p execucao.PayloadExecutarReparo
+			if err := env.LerPayload(&p); err != nil {
+				// Vazio → o caso de uso responde ExecucaoFalhou (a saga estorna).
+				logging.Log(ctx).Error("payload de ExecutarReparo inválido", "error", err)
+				p = execucao.PayloadExecutarReparo{}
+			}
+			return ignorarDuplicata(uc.ExecutarReparo(ctx, comando(env), p))
+		},
+		execucao.TipoCancelarTarefas: func(ctx context.Context, env mensageria.Envelope) error {
+			return ignorarDuplicata(uc.CancelarTarefas(ctx, comando(env)))
 		},
 	}
 }

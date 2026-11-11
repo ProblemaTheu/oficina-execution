@@ -58,6 +58,9 @@ func (u *ucFake) Iniciar(ctx context.Context, _ uuid.UUID, mec string) (tarefa.T
 	u.mecanico, u.correlacao = mec, logging.Correlacao(ctx)
 	return u.tarefa, u.err
 }
+func (u *ucFake) ConcluirReparo(_ context.Context, _ uuid.UUID) (tarefa.Tarefa, error) {
+	return u.tarefa, u.err
+}
 func (u *ucFake) ConcluirDiagnostico(_ context.Context, _ uuid.UUID, mec, diag string) (tarefa.Tarefa, error) {
 	u.mecanico, u.diagnostico = mec, diag
 	return u.tarefa, u.err
@@ -201,6 +204,7 @@ func TestErros_TraduzidosParaHTTP(t *testing.T) {
 			for _, rota := range []struct{ metodo, caminho, corpo string }{
 				{"POST", "/execution/v1/tarefas/" + uuid.NewString() + "/iniciar", ""},
 				{"POST", "/execution/v1/tarefas/" + uuid.NewString() + "/concluir-diagnostico", `{"diagnostico":"x"}`},
+				{"POST", "/execution/v1/tarefas/" + uuid.NewString() + "/concluir", ""},
 				{"GET", "/execution/v1/fila", ""},
 				{"GET", "/execution/v1/tarefas?os_id=" + uuid.NewString(), ""},
 			} {
@@ -223,5 +227,15 @@ func TestSegredoJWT(t *testing.T) {
 	t.Setenv("JWT_SECRET", string(segredo))
 	if s, err := SegredoJWT(); err != nil || string(s) != string(segredo) {
 		t.Errorf("SegredoJWT = %q, %v", s, err)
+	}
+}
+
+func TestConcluirReparo(t *testing.T) {
+	h := Rotas(&ucFake{tarefa: tarefaFake()}, segredo, pronto(nil))
+	if rec := chamar(t, h, "POST", "/execution/v1/tarefas/"+uuid.NewString()+"/concluir", mecanicoToken(t), ""); rec.Code != 200 {
+		t.Errorf("concluir reparo = %d %s", rec.Code, rec.Body)
+	}
+	if rec := chamar(t, h, "POST", "/execution/v1/tarefas/nao-uuid/concluir", mecanicoToken(t), ""); rec.Code != 400 {
+		t.Errorf("id inválido = %d", rec.Code)
 	}
 }

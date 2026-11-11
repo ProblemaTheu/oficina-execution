@@ -96,3 +96,48 @@ func TestConcluirDiagnostico_AguardandoSemMecanico(t *testing.T) {
 		t.Errorf("concluir direto exige mecânico: %v", err)
 	}
 }
+
+func TestConcluirReparo(t *testing.T) {
+	r := nova(t, Reparo)
+	if err := r.ConcluirReparo(agora); !errors.Is(err, ErrTransicaoInvalida) {
+		t.Errorf("reparo precisa ser iniciado antes (pivô): %v", err)
+	}
+	_ = r.Iniciar("mec", agora)
+	if err := r.ConcluirReparo(agora); err != nil || r.Estado != Concluida || r.FinalizadoEm == nil {
+		t.Fatalf("concluir: %v %+v", err, r)
+	}
+	d := nova(t, Diagnostico)
+	if err := d.ConcluirReparo(agora); !errors.Is(err, ErrTipoErrado) {
+		t.Errorf("diagnóstico não conclui como reparo: %v", err)
+	}
+	c := nova(t, Reparo)
+	c.Estado = Cancelada
+	if err := c.ConcluirReparo(agora); !errors.Is(err, ErrTarefaCancelada) {
+		t.Errorf("cancelada: %v", err)
+	}
+}
+
+func TestCancelar(t *testing.T) {
+	casos := map[Estado]bool{Aguardando: true, EmAndamento: true, Concluida: false, Cancelada: false}
+	for estado, muda := range casos {
+		tf := nova(t, Reparo)
+		tf.Estado = estado
+		if got := tf.Cancelar(agora); got != muda {
+			t.Errorf("%s.Cancelar() = %v, esperava %v", estado, got, muda)
+		}
+		if muda && (tf.Estado != Cancelada || tf.FinalizadoEm == nil) {
+			t.Errorf("%s: não cancelou: %+v", estado, tf)
+		}
+		if !muda && tf.Estado != estado {
+			t.Errorf("%s: estado alterado indevidamente", estado)
+		}
+	}
+}
+
+func TestPlacaDeFalhaSimulada(t *testing.T) {
+	for placa, falha := range map[string]bool{"FAL1A23": true, " fal9z99 ": true, "ABC1D23": false, "": false, "AFAL123": false} {
+		if PlacaDeFalhaSimulada(placa) != falha {
+			t.Errorf("%q: esperava %v", placa, falha)
+		}
+	}
+}

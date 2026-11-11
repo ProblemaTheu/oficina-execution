@@ -123,3 +123,43 @@ func (t *Tarefa) ConcluirDiagnostico(diagnostico, mecanico string, agora time.Ti
 	t.Estado, t.Diagnostico, t.FinalizadoEm = Concluida, strings.TrimSpace(diagnostico), &fim
 	return nil
 }
+
+// ConcluirReparo encerra um reparo em andamento. Diferente do diagnóstico, o
+// reparo precisa ser iniciado antes: o início é o pivô da saga (o OS baixa o
+// estoque ao receber ExecucaoIniciada) e não pode ser pulado.
+func (t *Tarefa) ConcluirReparo(agora time.Time) error {
+	if t.Tipo != Reparo {
+		return ErrTipoErrado
+	}
+	if t.Estado == Cancelada {
+		return ErrTarefaCancelada
+	}
+	if t.Estado != EmAndamento {
+		return fmt.Errorf("%w: %s → %s (inicie o reparo antes)", ErrTransicaoInvalida, t.Estado, Concluida)
+	}
+	fim := agora.UTC()
+	t.Estado, t.FinalizadoEm = Concluida, &fim
+	return nil
+}
+
+// Cancelar (compensação da saga): tarefa aguardando ou em andamento vira
+// CANCELADA. Concluída fica como está (mudou=false) — o que já foi feito não
+// se desfaz aqui; cancelada de novo é idempotente.
+func (t *Tarefa) Cancelar(agora time.Time) (mudou bool) {
+	if t.Estado != Aguardando && t.Estado != EmAndamento {
+		return false
+	}
+	fim := agora.UTC()
+	t.Estado, t.FinalizadoEm = Cancelada, &fim
+	return true
+}
+
+// prefixoFalhaSimulada é a placa que dispara a falha de demonstração (F4-4.7):
+// atravessa os 3 serviços no payload, funciona com várias réplicas sem estado
+// compartilhado e é visível na tela.
+const prefixoFalhaSimulada = "FAL"
+
+// PlacaDeFalhaSimulada informa se a placa é a de demonstração (FAL*).
+func PlacaDeFalhaSimulada(placa string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(placa)), prefixoFalhaSimulada)
+}
