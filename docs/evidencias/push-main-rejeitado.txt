@@ -1,0 +1,10 @@
+$ git push origin main   # oficina-execution, 12/11/2026 13:26
+remote: error: GH013: Repository rule violations found for refs/heads/main.        
+remote: Review all repository rules at https://github.com/ProblemaTheu/oficina-execution/rules?ref=refs%2Fheads%2Fmain        
+remote: 
+remote: - Changes must be made through a pull request.        
+remote: 
+To https://github.com/ProblemaTheu/oficina-execution.git
+ ! [remote rejected] main -> main (push declined due to repository rule violations)
+error: failed to push some refs to 'https://github.com/ProblemaTheu/oficina-execution.git'
+(exit 1)

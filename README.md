@@ -93,6 +93,14 @@ AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=te
 
 **Cobertura unitária: 98,8%**, no critério do Sonar — exclui `cmd/` (bootstrap) e `internal/infra/dynamo/` (adaptador coberto pelos testes de integração contra DynamoDB real). As duas listas de exclusão ficam iguais em `scripts/cobertura.sh` e `sonar-project.properties`.
 
+### Evidências de cobertura e de proteção da `main`
+
+![Cobertura de testes unitários por pacote](docs/evidencias/cobertura.png)
+
+Gerado por `./scripts/cobertura.sh` (o mesmo gate de **80%** que roda no CI e no job de testes do CD, antes do build da imagem). A cobertura publicada no SonarCloud usa o mesmo critério: badge **Coverage** no topo deste README.
+
+A `main` é protegida por ruleset: só entra por **pull request aprovado**, sem push direto, sem force-push e sem deleção. Prova em [`docs/evidencias/push-main-rejeitado.txt`](docs/evidencias/push-main-rejeitado.txt): `push declined due to repository rule violations`.
+
 | Check do CI | O que valida |
 |---|---|
 | `Build e testes` | build, testes com `-race`, **cobertura ≥ 80%** |
