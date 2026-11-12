@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution
+  labels:
+    app.kubernetes.io/name: execution
+    app.kubernetes.io/part-of: oficina
+spec:
+  # Réplica ÚNICA e Recreate (corte 7′ do plano da Fase 4): o relay da outbox
+  # no DynamoDB não tem eleição de líder (não há advisory lock como no
+  # Postgres). Dois pods ao mesmo tempo — inclusive o surge de um rolling
+  # update — podiam publicar respostas da mesma saga fora de ordem. O preço é
+  # alguns segundos sem o serviço no deploy; as mensagens esperam na fila.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: execution
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: execution
+        app.kubernetes.io/part-of: oficina
+    spec:
+      serviceAccountName: execution
+      # Nível do pod: vale para qualquer container (inclusive sidecars
+      # injetados). O do container abaixo continua restringindo o resto.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # O pod não fala com a API do Kubernetes. A credencial AWS do Pod
+      # Identity chega por um volume projetado próprio, independente disto.
+      automountServiceAccountToken: false
+      # O consumidor termina a mensagem em andamento antes de sair; o
+      # visibility timeout da fila é 60 s.
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: execution
+          # Tag substituída pelo CD (kustomize edit set image)
+          image: docker.io/problematheu/oficina-execution:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: execution-config
+            # Gerado pelo CD a partir da SSM; vem depois, então prevalece.
+            - configMapRef:
+                name: execution-ambiente
+            - secretRef:
+                name: execution-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          # /health/ready lê a tabela: prova credencial (Pod Identity), rede e tabela.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            # UID/GID do usuário "app" criado no Dockerfile
+            runAsUser: 100
+            runAsGroup: 101
+            capabilities:
+              drop: ["ALL"]

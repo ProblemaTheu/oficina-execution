@@ -3,6 +3,7 @@ package mensageria
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -262,8 +263,14 @@ func TestCiclo_ReplicasConcorrentesPreservamOrdemPorSaga(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			relay := NovoRelay(o, p, ConfigRelay{Destinos: destinos, Lote: 7})
-			for i := 0; i < 50; i++ {
+			// Até a outbox esvaziar (com prazo), não um número fixo de ciclos:
+			// num runner lento quase todo ciclo encontra a liderança ocupada e
+			// volta sem publicar, e 50 ciclos fixos já deixaram mensagens para
+			// trás no CI ("publicadas 28 de 50") sem haver bug no relay.
+			prazo := time.Now().Add(5 * time.Second)
+			for time.Now().Before(prazo) && !todasEnviadas(o, len(msgs)) {
 				_, _ = relay.Ciclo(context.Background())
+				runtime.Gosched()
 			}
 		}()
 	}
@@ -279,6 +286,12 @@ func TestCiclo_ReplicasConcorrentesPreservamOrdemPorSaga(t *testing.T) {
 		}
 		ultima[e.SagaID] = e.Versao
 	}
+}
+
+func todasEnviadas(o *outboxFake, total int) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.enviada) >= total
 }
 
 func TestExecutar_RodaCiclosAteCancelar(t *testing.T) {
