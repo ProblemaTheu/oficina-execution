@@ -1,0 +1,43 @@
+# Overlay de produção — EKS na conta da Fase 4, namespace execution-prod.
+#
+# O namespace e a access entry da role de CD (Edit só neste namespace) são do
+# oficina-infra-k8s. O ConfigMap execution-ambiente e o Secret
+# execution-secrets precisam existir antes do primeiro rollout (o CD cria o
+# primeiro; o segundo é do scripts/prod-secret.sh).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: execution-prod
+
+resources:
+  - ../../base
+
+images:
+  - name: docker.io/problematheu/oficina-execution
+    newTag: latest
+
+patches:
+  # Este ambiente existe só para a demonstração (destruído após a entrega):
+  # liga a falha simulada do reparo (placas FAL*), gatilho da cena de
+  # compensação com estorno do vídeo.
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: execution-config
+      data:
+        PERMITIR_FALHA_SIMULADA: "true"
+
+  # Borda: Classic Load Balancer, como o OS na Fase 3. ⚠️ Não acrescentar
+  # `aws-load-balancer-type: nlb` — contas novas costumam responder
+  # OperationNotPermitted na API ELBv2 (ver k8s/overlays/prod do oficina-app).
+  # O API Gateway aponta para o DNS deste balanceador (F4-6.5).
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: execution
+        annotations:
+          service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+      spec:
+        type: LoadBalancer

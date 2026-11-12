@@ -1,0 +1,19 @@
+# Configuração estática. O que depende do ambiente provisionado (URLs das
+# filas e nome da tabela) vem do ConfigMap execution-ambiente, gerado pelo CD
+# a partir da SSM — envFrom posterior, então sobrescreve este.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: execution-config
+  labels:
+    app.kubernetes.io/name: execution
+    app.kubernetes.io/part-of: oficina
+data:
+  PORTA: "8080"
+  LOG_LEVEL: info
+  # O SDK da AWS não descobre a região sozinho com Pod Identity.
+  AWS_REGION: us-east-1
+  # Falha simulada no reparo para placas FAL* (F4-4.7). Desligada por padrão;
+  # o overlay prod liga, porque aquele ambiente existe só para a gravação.
+  PERMITIR_FALHA_SIMULADA: "false"
+  NEW_RELIC_APP_NAME: oficina-execution-prod

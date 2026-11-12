@@ -3,6 +3,7 @@
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=ProblemaTheu_oficina-execution&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=ProblemaTheu_oficina-execution)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=ProblemaTheu_oficina-execution&metric=coverage)](https://sonarcloud.io/component_measures?id=ProblemaTheu_oficina-execution&metric=coverage)
 [![CI](https://github.com/ProblemaTheu/oficina-execution/actions/workflows/ci.yml/badge.svg)](https://github.com/ProblemaTheu/oficina-execution/actions/workflows/ci.yml)
+[![CD](https://github.com/ProblemaTheu/oficina-execution/actions/workflows/cd.yml/badge.svg)](https://github.com/ProblemaTheu/oficina-execution/actions/workflows/cd.yml)
 
 Fila de **diagnóstico e reparo** da oficina. Um dos três microsserviços da Fase 4 do Tech Challenge (SOAT), ao lado do [OS Service](https://github.com/ProblemaTheu/oficina-app) e do [Billing Service](https://github.com/ProblemaTheu/oficina-billing).
 
@@ -113,3 +114,25 @@ AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 AWS_ACCESS_KEY_ID=te
 ## Ambientes
 
 Só `prod` é implantado; homologação dispensada conforme orientação do fórum (mesma decisão da Fase 3).
+
+## Infraestrutura e deploy
+
+| Pasta | O que tem |
+|---|---|
+| [`infra/`](infra/) | Terraform **do serviço**: fila `execution-commands.fifo` + DLQ (redrive após 5), **tabela DynamoDB `execution-tarefas`** (on-demand, GSI `gsi1`, TTL, PITR, criptografada), role do pod por **EKS Pod Identity** (só a própria tabela e fila; envia só para `os-saga-replies.fifo`), alarme da DLQ (CloudWatch + SNS) e o contrato SSM |
+| [`k8s/`](k8s/) | `base` (ServiceAccount, ConfigMap, Deployment com 1 réplica e estratégia `Recreate`, Service) + `overlays/prod` (namespace `execution-prod`, Classic Load Balancer, falha simulada `FAL*` ligada para a gravação) |
+| [`.github/workflows/cd.yml`](.github/workflows/cd.yml) | `Testes (gate de 80%)` → `Build e push` (Docker Hub, tag = SHA) → `Deploy no EKS` (SSM → ConfigMap `execution-ambiente`, `kubectl apply -k`, `rollout status`, smoke `/health/ready`, rollback automático, marcador no New Relic) |
+
+O deploy só roda com a variable `DEPLOY_ENABLED=true` (sem cluster, a imagem continua sendo publicada a cada merge). O `infra/` é aplicado localmente (corte 15 do plano: a role de CD só descreve o cluster e lê a SSM).
+
+**Ordem na primeira subida** (a partir do `oficina-infra-k8s` aplicado, com os namespaces e as access entries):
+
+```bash
+cd infra && terraform init && terraform apply        # fila, tabela, role do pod, SSM
+./scripts/prod-secret.sh                             # Secret execution-secrets (JWT compartilhado)
+gh workflow run cd.yml                               # ou merge na main
+```
+
+Contrato SSM publicado: `/oficina/prod/execution/fila-comandos-url`, `/oficina/prod/execution/dynamodb-tabela`. Consumido: `/oficina/shared/eks/cluster_name`, `/oficina/prod/os/fila-respostas-url`.
+
+**Isolamento de dados:** a role `oficina-execution-pod` não tem permissão em RDS, Secrets Manager nem nas filas do Billing — `aws iam simulate-principal-policy --policy-source-arn <role> --action-names rds-db:connect sqs:ReceiveMessage --resource-arns <arn da billing-commands.fifo>` devolve `implicitDeny`.

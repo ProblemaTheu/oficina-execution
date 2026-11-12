@@ -1,0 +1,228 @@
+name: CD
+
+# Testes → imagem no Docker Hub → deploy no EKS (namespace execution-prod).
+# Pipeline INDEPENDENTE: um merge aqui implanta só o Execution.
+#
+# Autenticação na AWS por OIDC (role gha-oficina-execution, do bootstrap do
+# oficina-infra-k8s), sem chave de longa duração. A trust policy só aceita
+# `main` ou `environment: prod`. A role só descreve o cluster e lê a SSM;
+# dentro do cluster tem Edit restrito a execution-prod (access entry no
+# oficina-infra-k8s). Um pipeline comprometido não alcança outro serviço.
+#
+# Mesmo desenho do CD do oficina-app, com duas diferenças:
+#   - job de testes antes do build: "deploy automatizado com validação de
+#     testes" fica visível no mesmo run (F4-6.1);
+#   - a configuração que depende do ambiente vem da SSM para um ConfigMap
+#     (execution-ambiente), em vez de endpoint fixo no overlay.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch: {}
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGEM: docker.io/problematheu/oficina-execution
+  NAMESPACE: execution-prod
+  DEPLOYMENT: execution
+
+jobs:
+  testes:
+    name: Testes (gate de 80%)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Testes unitários com -race e cobertura ≥ 80%
+        id: cobertura
+        run: ./scripts/cobertura.sh
+
+      - name: Resumo
+        if: always()
+        run: |
+          echo "### Execution — testes antes do deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "Cobertura unitária: **${{ steps.cobertura.outputs.cobertura }}%** (mínimo 80%). Abaixo disso a imagem nem é construída." >> "$GITHUB_STEP_SUMMARY"
+
+  build-and-push:
+    name: Build e push da imagem
+    needs: testes
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.sha_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Definir tags da imagem
+        id: meta
+        run: echo "sha_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Login no Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build e push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGEM }}:${{ steps.meta.outputs.sha_tag }}
+            ${{ env.IMAGEM }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Job Summary
+        run: |
+          {
+            echo "# 🐳 CD — Build e push da imagem"
+            echo
+            echo "Publicada em \`${IMAGEM}\`: \`${{ steps.meta.outputs.sha_tag }}\` e \`latest\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy no EKS
+    needs: build-and-push
+    # Liga/desliga o deploy sem mexer no workflow (mesma chave do oficina-app):
+    # sem cluster, a imagem continua sendo publicada a cada merge.
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write # OIDC
+    env:
+      TAG: ${{ needs.build-and-push.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Credenciais AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Kubeconfig
+        run: |
+          CLUSTER=$(aws ssm get-parameter --name /oficina/shared/eks/cluster_name \
+            --query Parameter.Value --output text)
+          aws eks update-kubeconfig --name "$CLUSTER" --region "${{ vars.AWS_REGION }}"
+
+      # Os valores vêm do infra/ deste repo e do oficina-app (fila de
+      # respostas) pela SSM. Um parâmetro ausente falha aqui, antes de
+      # mexer no cluster — e com a mensagem certa.
+      - name: Config do ambiente (SSM → ConfigMap execution-ambiente)
+        run: |
+          ssm() {
+            local nome="$1" dica="$2"
+            aws ssm get-parameter --name "$nome" --query Parameter.Value --output text \
+              || { echo "::error::parâmetro SSM $nome ausente — $dica"; exit 1; }
+          }
+          FILA_EXECUTION_URL=$(ssm /oficina/prod/execution/fila-comandos-url "aplique o infra/ deste repositório")
+          FILA_RESPOSTAS_URL=$(ssm /oficina/prod/os/fila-respostas-url "aplique o infra/servico do oficina-app")
+          DYNAMODB_TABELA=$(ssm /oficina/prod/execution/dynamodb-tabela "aplique o infra/ deste repositório")
+          kubectl -n "$NAMESPACE" create configmap execution-ambiente \
+            --from-literal=FILA_EXECUTION_URL="$FILA_EXECUTION_URL" \
+            --from-literal=FILA_RESPOSTAS_URL="$FILA_RESPOSTAS_URL" \
+            --from-literal=DYNAMODB_TABELA="$DYNAMODB_TABELA" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      # O Secret não é do pipeline (a role de CD não lê o Secrets Manager):
+      # é criado uma vez por scripts/prod-secret.sh. Sem ele o pod nunca fica
+      # pronto — melhor falhar aqui com a instrução do que no rollout.
+      - name: Conferir Secret execution-secrets
+        run: |
+          kubectl -n "$NAMESPACE" get secret execution-secrets >/dev/null \
+            || { echo "::error::Secret execution-secrets ausente em $NAMESPACE — rode ./scripts/prod-secret.sh"; exit 1; }
+
+      - name: Instalar kustomize
+        run: |
+          if ! command -v kustomize >/dev/null; then
+            curl -sSL --proto '=https' --tlsv1.2 \
+              "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz" \
+              | sudo tar -xz -C /usr/local/bin kustomize
+          fi
+          kustomize version
+
+      # A tag entra no overlay ANTES do apply: um rollout só, com a imagem certa.
+      - name: Aplicar manifestos (overlay prod)
+        id: apply
+        working-directory: k8s/overlays/prod
+        run: |
+          kustomize edit set image "${IMAGEM}=${IMAGEM}:${TAG}"
+          kustomize build . | grep -E 'image:'
+          kubectl apply -k .
+
+      - name: Aguardar rollout
+        id: rollout
+        run: kubectl -n "$NAMESPACE" rollout status "deployment/${DEPLOYMENT}" --timeout=300s
+
+      # Smoke test de dentro do pod: /health/ready lê a tabela (credencial do
+      # Pod Identity + DynamoDB). Não depende
+      # do DNS do Classic Load Balancer, que leva minutos para propagar na
+      # primeira criação.
+      - name: Smoke test (/health/ready)
+        id: smoke
+        run: |
+          kubectl -n "$NAMESPACE" exec "deployment/${DEPLOYMENT}" -- \
+            wget -qO- http://localhost:8080/health/ready
+
+      # Só desfaz o que este run mexeu: falha antes do apply não alterou nada.
+      - name: Rollback em caso de falha
+        if: failure() && (steps.apply.outcome == 'failure' || steps.rollout.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        run: |
+          kubectl -n "$NAMESPACE" rollout undo "deployment/${DEPLOYMENT}"
+          kubectl -n "$NAMESPACE" rollout status "deployment/${DEPLOYMENT}" --timeout=180s
+
+      - name: Registrar deploy no New Relic (Change Tracking)
+        if: success() && vars.NEW_RELIC_ENTITY_GUID != ''
+        uses: newrelic/deployment-marker-action@d88a59ea8f713ad6935e60de27273157790b1e3b # v2.6.2
+        with:
+          apiKey: ${{ secrets.NEW_RELIC_API_KEY }}
+          region: US
+          commandType: changeTrackingCreateEvent
+          entitySearch: "id = '${{ vars.NEW_RELIC_ENTITY_GUID }}'"
+          category: Deployment
+          type: BASIC
+          version: ${{ env.TAG }}
+          commit: ${{ github.sha }}
+          changelog: ${{ github.ref_name }}
+          user: ${{ github.actor }}
+
+      - name: Job Summary
+        if: always()
+        run: |
+          {
+            echo "# 🚀 CD — Deploy no EKS"
+            echo
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "Imagem \`${TAG}\` implantada em \`${NAMESPACE}/${DEPLOYMENT}\`; smoke test \`/health/ready\` ok."
+              LB=$(kubectl -n "$NAMESPACE" get svc "${DEPLOYMENT}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+              [ -n "$LB" ] && echo "Load balancer: \`${LB}\`"
+            else
+              echo "**Deploy falhou** — ver o log acima (rollback executado se o apply já tinha mexido no cluster)."
+            fi
+            echo
+            echo "> Estratégia Recreate: o relay da outbox no DynamoDB exige um pod só (corte 7′)."
+          } >> "$GITHUB_STEP_SUMMARY"
