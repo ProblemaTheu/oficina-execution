@@ -100,6 +100,51 @@ jobs:
             echo "Publicada em \`${IMAGEM}\`: \`${{ steps.meta.outputs.sha_tag }}\` e \`latest\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # Deploy em Kubernetes efêmero (kind): implanta a imagem que acabou de ser
+  # publicada (tag = SHA) num cluster kind criado no runner, com os manifests
+  # k8s/base deste repositório e só as dependências deste serviço, e valida
+  # com rollout + smoke /health/ready. O script e os manifests das
+  # dependências são do oficina-app (local/), lidos como pasta irmã — o mesmo
+  # arranjo do docker-compose.saga.yml. DEPLOY_ENABLED escolhe o destino:
+  # kind (padrão) ou EKS (true).
+  deploy-kind:
+    name: Deploy no Kubernetes (kind)
+    needs: build-and-push
+    if: vars.DEPLOY_ENABLED != 'true'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.build-and-push.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: oficina-execution
+
+      - name: Checkout do oficina-app (script e dependências locais)
+        uses: actions/checkout@v7
+        with:
+          repository: ProblemaTheu/oficina-app
+          ref: main
+          path: oficina-app
+
+      - name: Deploy, rollout e smoke test
+        run: ./oficina-app/local/deploy-ci.sh execution "${IMAGEM}:${TAG}"
+
+      - name: Job Summary
+        if: always()
+        run: |
+          {
+            echo "# ☸️ CD — Deploy no Kubernetes (kind)"
+            echo
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "Imagem \`${IMAGEM}:${TAG}\` implantada em \`${NAMESPACE}/${DEPLOYMENT}\` (manifests \`k8s/base\`) — rollout ok e \`/health/ready\` UP."
+            else
+              echo "**Deploy falhou** — ver o diagnóstico no log do passo anterior."
+            fi
+            echo
+            echo "> Cluster efêmero criado no runner. Com \`DEPLOY_ENABLED=true\`, o deploy vai para o EKS."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Deploy no EKS
     needs: build-and-push
