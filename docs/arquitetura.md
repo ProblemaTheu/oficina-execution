@@ -1,6 +1,6 @@
 # Arquitetura — Execution Service
 
-> Visão do serviço dentro da saga da Fase 4. O desenho completo do sistema está em [`oficina-app/docs/planejamentos/fase-4/arquitetura.md`](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/planejamentos/fase-4/arquitetura.md); as decisões, nas [ADRs 009–016](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/architecture-decisions.md).
+> Visão do serviço dentro da saga da Fase 4. O desenho completo do sistema está em [`oficina-app/docs/planejamentos/fase-4/arquitetura.md`](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/planejamentos/fase-4/arquitetura.md); as decisões, nas [ADRs 009–017](https://github.com/ProblemaTheu/oficina-app/blob/main/docs/architecture-decisions.md).
 
 ## 1. Componentes
 
