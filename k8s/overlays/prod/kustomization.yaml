@@ -28,10 +28,10 @@ patches:
       data:
         PERMITIR_FALHA_SIMULADA: "true"
 
-  # Borda: Classic Load Balancer, como o OS na Fase 3. ⚠️ Não acrescentar
-  # `aws-load-balancer-type: nlb` — contas novas costumam responder
-  # OperationNotPermitted na API ELBv2 (ver k8s/overlays/prod do oficina-app).
-  # O API Gateway aponta para o DNS deste balanceador (F4-6.5).
+  # Borda: Classic Load Balancer, como o OS (sem a anotação
+  # `aws-load-balancer-type`, o controlador de serviço do EKS cria um CLB —
+  # sem AWS Load Balancer Controller). O API Gateway aponta para o DNS deste
+  # balanceador (F4-6.5).
   - patch: |-
       apiVersion: v1
       kind: Service
